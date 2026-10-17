@@ -1,0 +1,17 @@
+[package]
+name = "taxi-core"
+description = "Geo core for the decentralized p2p taxi aggregator: H3 hex routing, obfuscated ride requests and Veilid DHT boards"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+h3o.workspace = true
+serde.workspace = true
+postcard.workspace = true
+tokio.workspace = true
+veilid-core.workspace = true
+sha2.workspace = true
+blake3.workspace = true
+ed25519-dalek.workspace = true
+thiserror.workspace = true

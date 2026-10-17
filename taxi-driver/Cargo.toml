@@ -1,0 +1,18 @@
+[package]
+name = "taxi-driver"
+description = "Driver node: scans H3 zones for obfuscated ride requests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "taxi-driver"
+path = "src/main.rs"
+
+[dependencies]
+taxi-core = { path = "../taxi-core" }
+h3o.workspace = true
+serde.workspace = true
+tokio.workspace = true
+veilid-core.workspace = true
+clap.workspace = true

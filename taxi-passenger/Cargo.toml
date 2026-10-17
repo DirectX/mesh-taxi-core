@@ -1,0 +1,19 @@
+[package]
+name = "taxi-passenger"
+description = "Passenger node: publishes an obfuscated ride request on the H3 DHT board"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "taxi-passenger"
+path = "src/main.rs"
+
+[dependencies]
+taxi-core = { path = "../taxi-core" }
+h3o.workspace = true
+serde.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+veilid-core.workspace = true
+clap.workspace = true
