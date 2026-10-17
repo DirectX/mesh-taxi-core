@@ -88,7 +88,10 @@ fn board_record_key_is_stable_and_covers_board_secret() {
 
     assert_eq!(key1, key2, "record key must be derived deterministically");
     assert_eq!(key1.kind(), veilid_core::CRYPTO_KIND_VLD0);
-    assert_ne!(key1, key_other, "different cells must map to different boards");
+    assert_ne!(
+        key1, key_other,
+        "different cells must map to different boards"
+    );
 }
 
 #[test]
@@ -182,7 +185,10 @@ fn scan_plan_covers_all_zones() {
     let plan = search::scan_plan(center, search::MAX_ZONE);
 
     assert_eq!(plan.len(), 3);
-    assert_eq!(search::all_cells(center, search::MAX_ZONE).len(), 7 + 12 + 18);
+    assert_eq!(
+        search::all_cells(center, search::MAX_ZONE).len(),
+        7 + 12 + 18
+    );
 }
 
 #[test]
@@ -192,4 +198,135 @@ fn distance_matches_demo() {
 
     let dist = pickup.distance_km(&driver);
     assert!(dist > 1.0 && dist < 4.0, "distance was {}", dist);
+}
+
+fn fresh_rating(rides: u32, average_milli: u32, now: u64) -> bargain::RatingClaim {
+    bargain::RatingClaim::now(rides, average_milli, now)
+}
+
+const NOW: u64 = 1_750_000_000;
+
+#[test]
+fn rating_policy_accepts_fresh_claim() {
+    let policy = bargain::RatingPolicy::open_network();
+    let claim = fresh_rating(12, 4600, NOW);
+
+    policy.check_claim(&claim, NOW).unwrap();
+    assert!(matches!(
+        bargain::decide_offer(25_000, 25_000, &claim, &policy, NOW),
+        bargain::BargainDecision::Accept
+    ));
+}
+
+#[test]
+fn rating_policy_rejects_bad_rating_and_stale_claims() {
+    let policy = bargain::RatingPolicy {
+        min_average_milli: 4000,
+        ..bargain::RatingPolicy::open_network()
+    };
+
+    assert!(policy.check_claim(&fresh_rating(1, 200, NOW), NOW).is_err());
+    assert!(
+        policy
+            .check_claim(&fresh_rating(1, 12000, NOW), NOW)
+            .is_err()
+    );
+    assert!(
+        policy
+            .check_claim(&fresh_rating(1, 4600, NOW - 1000), NOW)
+            .is_err(),
+        "claims must be fresher than the policy window"
+    );
+    policy
+        .check_claim(&fresh_rating(1, 4600, NOW), NOW)
+        .unwrap();
+}
+
+#[test]
+fn rating_policy_rejects_low_rides_floor() {
+    let policy = bargain::RatingPolicy {
+        min_rides: 10,
+        ..bargain::RatingPolicy::open_network()
+    };
+    assert!(
+        policy
+            .check_claim(&fresh_rating(9, 5000, NOW), NOW)
+            .is_err()
+    );
+    policy
+        .check_claim(&fresh_rating(10, 5000, NOW), NOW)
+        .unwrap();
+}
+
+#[test]
+fn decide_offer_meets_floor_before_accepting() {
+    let policy = bargain::RatingPolicy::open_network();
+    let claim = fresh_rating(50, 4000, NOW);
+
+    assert!(matches!(
+        bargain::decide_offer(25_000, 20_000, &claim, &policy, NOW),
+        bargain::BargainDecision::Counter { floor: 25_000 }
+    ));
+    assert!(matches!(
+        bargain::decide_offer(25_000, 30_000, &claim, &policy, NOW),
+        bargain::BargainDecision::Accept
+    ));
+    assert!(matches!(
+        bargain::decide_offer(25_000, 30_000, &fresh_rating(0, 0, NOW), &policy, NOW),
+        bargain::BargainDecision::Accept
+    ));
+}
+
+#[test]
+fn bargain_message_codec_roundtrip_all_stages() {
+    let claim = fresh_rating(7, 4500, 1_700_000_000);
+    let pickup = geo::GeoPoint::new(PICKUP.0, PICKUP.1).unwrap();
+    let target = geo::GeoPoint::new(TARGET.0, TARGET.1).unwrap();
+    let details = proto::PreciseRouteDetails {
+        from_point: pickup,
+        to_point: target,
+    };
+
+    let messages = vec![
+        bargain::BargainMessage::Offer(bargain::DriverOffer {
+            request_id: "demo-request".into(),
+            counter_price: 25_000,
+            rating: claim,
+        }),
+        bargain::BargainMessage::Counter(bargain::BargainCounter {
+            request_id: "demo-request".into(),
+            price: 25_000,
+            reason: "floor".into(),
+        }),
+        bargain::BargainMessage::Accept(bargain::BargainAccept {
+            request_id: "demo-request".into(),
+        }),
+        bargain::BargainMessage::Decline(bargain::BargainDecline {
+            request_id: "demo-request".into(),
+            reason: "stale claim".into(),
+        }),
+        bargain::BargainMessage::DetailsRequest(bargain::DetailsRequest {
+            request_id: "demo-request".into(),
+        }),
+        bargain::BargainMessage::Details(details),
+    ];
+
+    for message in messages {
+        let decoded = bargain::BargainMessage::decode(&message.encode().unwrap()).unwrap();
+        assert_eq!(decoded, message);
+    }
+}
+
+#[test]
+fn precise_route_details_codec_roundtrip() {
+    let pickup = geo::GeoPoint::new(PICKUP.0, PICKUP.1).unwrap();
+    let target = geo::GeoPoint::new(TARGET.0, TARGET.1).unwrap();
+
+    let details = proto::PreciseRouteDetails {
+        from_point: pickup.clone(),
+        to_point: target.clone(),
+    };
+    let decoded = proto::PreciseRouteDetails::decode(&details.encode().unwrap()).unwrap();
+
+    assert_eq!(decoded, details);
 }

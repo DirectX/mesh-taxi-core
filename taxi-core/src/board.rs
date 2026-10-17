@@ -32,7 +32,8 @@ pub fn board_owner_keypair(hex: CellIndex) -> KeyPair {
     let signing_key = SigningKey::from_bytes(&seed);
     let public_bytes = signing_key.verifying_key().to_bytes();
 
-    let public_key = veilid_core::PublicKey::new(CRYPTO_KIND_VLD0, BarePublicKey::new(&public_bytes));
+    let public_key =
+        veilid_core::PublicKey::new(CRYPTO_KIND_VLD0, BarePublicKey::new(&public_bytes));
     let bare_secret = BareSecretKey::new(&seed);
 
     KeyPair::new_from_parts(public_key, bare_secret)
@@ -51,10 +52,7 @@ pub fn board_record_key(hex: CellIndex) -> RecordKey {
     hasher.update(&schema_data);
 
     let opaque = BareOpaqueRecordKey::new(hasher.finalize().as_bytes());
-    RecordKey::new(
-        CRYPTO_KIND_VLD0,
-        BareRecordKey::new(opaque, None),
-    )
+    RecordKey::new(CRYPTO_KIND_VLD0, BareRecordKey::new(opaque, None))
 }
 
 /// Maps a request id onto a stable subkey inside the board schema.

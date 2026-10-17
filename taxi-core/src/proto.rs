@@ -44,8 +44,18 @@ impl ObfuscatedRideRequest {
 }
 
 /// 2: exact geo exchange AFTER a driver offer is accepted and validated.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PreciseRouteDetails {
     pub from_point: GeoPoint,
     pub to_point: GeoPoint,
+}
+
+impl PreciseRouteDetails {
+    pub fn encode(&self) -> CoreResult<Vec<u8>> {
+        postcard::to_allocvec(self).map_err(|e| CoreError::Encoding(e.to_string()))
+    }
+
+    pub fn decode(bytes: &[u8]) -> CoreResult<Self> {
+        postcard::from_bytes(bytes).map_err(|e| CoreError::Encoding(e.to_string()))
+    }
 }

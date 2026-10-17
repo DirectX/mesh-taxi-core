@@ -42,8 +42,7 @@ impl GeoPoint {
     }
 
     pub fn lat(&self) -> LatLng {
-        LatLng::new(self.latitude, self.longitude)
-            .expect("coordinates validated in GeoPoint::new")
+        LatLng::new(self.latitude, self.longitude).expect("coordinates validated in GeoPoint::new")
     }
 
     /// Res 8 cell whose DHT board this point publishes into.

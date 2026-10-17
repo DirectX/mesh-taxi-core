@@ -38,12 +38,14 @@ impl NodeConfig {
 /// A running veilid node handle with a buffered update stream.
 pub struct Node {
     api: VeilidAPI,
-    updates: mpsc::UnboundedReceiver<VeilidUpdate>,
+    updates: Option<mpsc::UnboundedReceiver<VeilidUpdate>>,
 }
 
 impl std::fmt::Debug for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Node").field("program", &"mesh_taxi").finish()
+        f.debug_struct("Node")
+            .field("program", &"mesh_taxi")
+            .finish()
     }
 }
 
@@ -72,17 +74,22 @@ impl Node {
         let api = api_startup(update_callback, veilid_config).await?;
         api.attach().await?;
 
-        Ok(Node { api, updates })
+        Ok(Node {
+            api,
+            updates: Some(updates),
+        })
     }
 
     pub fn api(&self) -> &VeilidAPI {
         &self.api
     }
 
-    /// Subscribes to the node update stream (attachment states, app
-    /// messages / calls over imported routes, value changes, ...).
-    pub fn update_stream(&mut self) -> &mut mpsc::UnboundedReceiver<VeilidUpdate> {
-        &mut self.updates
+    /// Drains the node update stream (attachment states, app messages /
+    /// calls over imported routes, value changes, ...).
+    ///
+    /// The returned receiver keeps collecting updates for the node lifetime.
+    pub fn take_update_stream(&mut self) -> Option<mpsc::UnboundedReceiver<VeilidUpdate>> {
+        self.updates.take()
     }
 
     pub async fn routing_context(&self) -> CoreResult<veilid_core::RoutingContext> {

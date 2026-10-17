@@ -12,6 +12,7 @@
 //!    blob; drivers import it and negotiate precise `PreciseRouteDetails`
 //!    end-to-end, only after the rating handshake.
 
+pub mod bargain;
 pub mod board;
 pub mod error;
 pub mod geo;
@@ -19,7 +20,14 @@ pub mod node;
 pub mod proto;
 pub mod search;
 
-pub use board::{BOARD_SCHEMA_O_CNT, board_owner_keypair, board_record_key, board_schema, subkey_for_request, validate_subkey};
+pub use bargain::{
+    BargainAccept, BargainCounter, BargainDecision, BargainDecline, BargainMessage, DetailsRequest,
+    DriverOffer, RatingClaim, RatingPolicy, decide_offer,
+};
+pub use board::{
+    BOARD_SCHEMA_O_CNT, board_owner_keypair, board_record_key, board_schema, subkey_for_request,
+    validate_subkey,
+};
 pub use error::{CoreError, CoreResult};
 pub use geo::{GeoPoint, POSITION_RESOLUTION, SEARCH_RESOLUTION, board_label};
 pub use node::{Node, NodeConfig};

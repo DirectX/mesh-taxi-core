@@ -37,7 +37,9 @@ pub fn zone_cells(center: CellIndex, zone: u32) -> Zone {
 
 /// Full search plan: zones 1..=max expanded from `center`.
 pub fn scan_plan(center: CellIndex, max_zone: u32) -> Vec<Zone> {
-    (1..=max_zone.max(1)).map(|zone| zone_cells(center, zone)).collect()
+    (1..=max_zone.max(1))
+        .map(|zone| zone_cells(center, zone))
+        .collect()
 }
 
 /// Flat, ordered list of all cells to query for a max zone.

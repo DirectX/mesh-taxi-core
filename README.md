@@ -39,6 +39,20 @@ hexagon indices and Veilid opaque record keys.
    cell maps to a board record; `inspect_dht_record(SyncGet)` lists occupied
    subkeys and each value is fetched, decoded and checked against `expires_at`.
 
+5. **Bargain handshake** (`taxi-core/src/bargain.rs`)
+   After discovering a request the driver imports its `route_blob`
+   (`VeilidAPI::import_remote_private_route`) and runs the RPC chain:
+
+   1. `app_call(Offer)` over the imported route: `DriverOffer
+      { request_id, counter_price, rating: RatingClaim }`.
+   2. The passenger applies a `RatingPolicy` (claim freshness, minimum
+      rides, rating floor) — only validated offers may continue.
+   3. Passenger reply: `Accept`, `Counter { price }` (counter still opens
+      the rating gate) or `Decline { reason }`.
+   4. Driver (having agreed to the counter) sends `app_call(DetailsRequest)`
+      and receives `PreciseRouteDetails { from_point, to_point }` — the exact
+      pickup/target coordinates, only revealed past rating validation.
+
 ## Running the demo workflow (live Veilid network)
 
 ```bash
@@ -48,15 +62,20 @@ cargo run -p taxi-passenger -- \
     --to-lat 48.860641 --to-lon 2.337618 \
     --price 25000
 
-# Terminal 2: driver ~2.5 km away (found in zone 3)
+# Terminal 2: driver ~2.5 km away (found in zone 3); offers over the
+# imported route blob, bargain, then fetches PreciseRouteDetails
 cargo run -p taxi-driver -- \
     --lat 48.877989 --lon 2.282461 \
-    --max-zone 3 --scan-interval 20
+    --max-zone 3 --scan-interval 20 \
+    --offer --rides 40 --average-rating 4600
 ```
 
 The driver prints found requests with the deobfuscated distance to the pickup
-cell; the passenger's route blob inside the request is the connection channel
-for the precise geo exchange. Ctrl-C stops either node.
+cell, bargains with `DriverOffer` over the imported route blob and, once the
+passenger's rating validation passes, prints the exact `PreciseRouteDetails`
+pickup/target coordinates. The passenger stays online serving
+`app_call`s (offer -> accept/counter/decline -> details). Ctrl-C stops either
+node.
 
 ## Tests
 
@@ -64,13 +83,14 @@ for the precise geo exchange. Ctrl-C stops either node.
 cargo test --workspace
 ```
 
-14 unit tests cover resolution mapping, key/subkey derivation, codec
-roundtrips, zone geometry (no overlap, zone-3 reach) and the demo distances.
+20 unit tests cover resolution mapping, key/subkey derivation, codec
+roundtrips (requests, bargain messages, precise details), zone geometry (no
+overlap, zone-3 reach), the demo distances and the rating/bargain decisions.
 
 ## Status / next steps
 
 - [x] Geo core (this release)
-- [ ] Driver -> passenger `app_call` over the imported route blob
-- [ ] Offer/bargain protocol and `PreciseRouteDetails` exchange after rating validation
-- [ ] Reputation ledger on per-rating subkeys
+- [x] Driver -> passenger `app_call` over the imported route blob
+- [x] Offer/bargain protocol and `PreciseRouteDetails` exchange after rating validation
+- [ ] Reputation ledger on per-rating subkeys (beyond the self-reported `RatingClaim`)
 - [ ] Proper signature mobile PWA
