@@ -1,23 +1,15 @@
-use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use taxi_core::{
-    BargainDecision, BargainMessage, DetailsRequest, GeoPoint, Node, NodeConfig,
-    ObfuscatedRideRequest, PreciseRouteDetails, RatingPolicy, board_label, board_owner_keypair,
-    board_record_key, board_schema, decide_offer, subkey_for_request, validate_subkey,
+    BargainMessage, GeoPoint, Node, NodeConfig, ObfuscatedRideRequest, PassengerBargain,
+    RatingPolicy, board_label, board_owner_keypair, board_record_key, board_schema,
+    subkey_for_request, validate_subkey,
 };
-use veilid_core::{CRYPTO_KIND_VLD0, VeilidAppCall, VeilidUpdate};
+use veilid_core::{CRYPTO_KIND_VLD0, VeilidAPI, VeilidAppCall, VeilidUpdate};
 
 /// How long to wait for the node to become attached and network-ready.
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(180);
-
-/// Per-request bargain bookkeeping: rating validation gates the
-/// `PreciseRouteDetails` exchange.
-#[derive(Debug, Clone, Copy)]
-struct BargainState {
-    rating_validated: bool,
-}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -72,8 +64,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_claim_age_secs: cli.claim_age,
         ..RatingPolicy::open_network()
     };
-    let mut bargains: HashMap<String, BargainState> = HashMap::new();
-
+    let mut bargains = PassengerBargain::new(
+        pickup.clone(),
+        target.clone(),
+        cli.min_price.unwrap_or(cli.price),
+        policy,
+    );
     println!("Starting passenger node (veilid)...");
     let mut cfg = NodeConfig::new("mesh_taxi_passenger");
     cfg.storage_dir = cli.data_dir.clone();
@@ -154,16 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::select! {
             update = updates.recv() => match update {
                 Some(VeilidUpdate::AppCall(app_call)) => {
-                    handle_app_call(
-                        &node,
-                        app_call,
-                        &policy,
-                        &mut bargains,
-                        cli.min_price.unwrap_or(cli.price),
-                        &pickup,
-                        &target,
-                    )
-                    .await;
+                    answer_call(node.api(), app_call, &mut bargains).await
                 }
                 Some(VeilidUpdate::Shutdown) => break,
                 _ => {}
@@ -186,137 +173,29 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-async fn handle_app_call(
-    node: &Node,
+async fn answer_call(
+    api: &VeilidAPI,
     app_call: Box<VeilidAppCall>,
-    policy: &RatingPolicy,
-    bargains: &mut HashMap<String, BargainState>,
-    floor: u64,
-    pickup: &GeoPoint,
-    target: &GeoPoint,
+    bargains: &mut PassengerBargain,
 ) {
-    let request_id = "unknown".to_string();
-    let api = node.api();
-
-    let Ok(message) = BargainMessage::decode(app_call.message()) else {
-        println!("[PASS] app call with unknown payload, declined");
-        send_reply(
-            api,
-            &app_call,
-            &BargainMessage::Decline(taxi_core::BargainDecline {
-                request_id: request_id.clone(),
-                reason: "unknown bargain message".into(),
-            }),
-        )
-        .await;
+    let reply = match BargainMessage::decode(app_call.message()) {
+        Ok(message) => bargains.handle(message, now_secs()),
+        Err(_) => {
+            println!("[PASS] app call with unknown payload, declined");
+            return;
+        }
+    };
+    let Some(reply) = reply else {
         return;
     };
 
-    match message {
-        BargainMessage::Offer(offer) => {
-            let now = now_secs();
-            let decision = decide_offer(floor, offer.counter_price, &offer.rating, policy, now);
-            let state = match &decision {
-                BargainDecision::Accept => {
-                    println!(
-                        "[PASS] offer accepted from driver (price {}) after rating validation",
-                        offer.counter_price
-                    );
-                    BargainState {
-                        rating_validated: true,
-                    }
-                }
-                BargainDecision::Counter { .. } => {
-                    println!(
-                        "[PASS] driver passed rating validation but price {} is below floor {}",
-                        offer.counter_price, floor
-                    );
-                    BargainState {
-                        rating_validated: true,
-                    }
-                }
-                BargainDecision::Decline { reason } => {
-                    println!("[PASS] offer declined: {}", reason);
-                    BargainState {
-                        rating_validated: false,
-                    }
-                }
-            };
-            bargains.insert(offer.request_id.clone(), state);
-
-            let reply = match decision {
-                BargainDecision::Accept => BargainMessage::Accept(taxi_core::BargainAccept {
-                    request_id: offer.request_id.clone(),
-                }),
-                BargainDecision::Counter {
-                    floor: counter_floor,
-                } => BargainMessage::Counter(taxi_core::BargainCounter {
-                    request_id: offer.request_id.clone(),
-                    price: counter_floor,
-                    reason: "my price floor".into(),
-                }),
-                BargainDecision::Decline { reason } => {
-                    BargainMessage::Decline(taxi_core::BargainDecline {
-                        request_id: offer.request_id.clone(),
-                        reason,
-                    })
-                }
-            };
-            send_reply(api, &app_call, &reply).await;
-        }
-        BargainMessage::DetailsRequest(DetailsRequest { request_id }) => {
-            let state = bargains.get(&request_id).copied().unwrap_or(BargainState {
-                rating_validated: false,
-            });
-            if !state.rating_validated {
-                println!("[PASS] details request without a validated offer, declined");
-                send_reply(
-                    api,
-                    &app_call,
-                    &BargainMessage::Decline(taxi_core::BargainDecline {
-                        request_id: request_id.clone(),
-                        reason: "no accepted offer".into(),
-                    }),
-                )
-                .await;
-                return;
-            }
-            let details = PreciseRouteDetails {
-                from_point: pickup.clone(),
-                to_point: target.clone(),
-            };
-            println!(
-                "[PASS] revealing PreciseRouteDetails to the validated driver for {}",
-                request_id
-            );
-            send_reply(api, &app_call, &BargainMessage::Details(details)).await;
-        }
-        BargainMessage::Details(_) => {
-            println!("[PASS] unexpected details from a driver, ignored");
-        }
-        BargainMessage::Accept(_accept) => {
-            println!("[PASS] unexpected accept from a driver, ignored");
-        }
-        BargainMessage::Counter(counter) => {
-            println!(
-                "[PASS] unexpected counter {} from a driver, ignored",
-                counter.price
-            );
-        }
-        BargainMessage::Decline(decline) => {
-            println!(
-                "[PASS] driver declined for {}: {}",
-                decline.request_id, decline.reason
-            );
-        }
+    for log in reply.logs {
+        println!("[PASS] {}", log);
     }
+    send_reply(api, &app_call, &reply.message).await;
 }
 
-async fn send_reply(
-    api: &veilid_core::VeilidAPI,
-    app_call: &VeilidAppCall,
-    message: &BargainMessage,
-) {
+async fn send_reply(api: &VeilidAPI, app_call: &VeilidAppCall, message: &BargainMessage) {
     let encoded = match message.encode() {
         Ok(bytes) => bytes,
         Err(e) => {

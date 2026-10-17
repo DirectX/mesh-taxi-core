@@ -21,8 +21,9 @@ pub mod proto;
 pub mod search;
 
 pub use bargain::{
-    BargainAccept, BargainCounter, BargainDecision, BargainDecline, BargainMessage, DetailsRequest,
-    DriverOffer, RatingClaim, RatingPolicy, decide_offer,
+    BargainAccept, BargainCounter, BargainDecision, BargainDecline, BargainMessage, BargainStep,
+    DetailsRequest, DriverOffer, PassengerBargain, PassengerReply, RatingClaim, RatingPolicy,
+    bargain_request, decide_offer,
 };
 pub use board::{
     BOARD_SCHEMA_O_CNT, board_owner_keypair, board_record_key, board_schema, subkey_for_request,
@@ -32,7 +33,9 @@ pub use error::{CoreError, CoreResult};
 pub use geo::{GeoPoint, POSITION_RESOLUTION, SEARCH_RESOLUTION, board_label};
 pub use node::{Node, NodeConfig};
 pub use proto::{ObfuscatedRideRequest, PreciseRouteDetails};
-pub use search::{MAX_ZONE, Zone, all_cells, scan_plan, zone_cells, zone_of};
+pub use search::{
+    MAX_ZONE, Zone, all_cells, collect_board_requests, scan_plan, zone_cells, zone_of,
+};
 
 #[cfg(test)]
 mod tests;

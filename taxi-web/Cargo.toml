@@ -1,0 +1,16 @@
+[package]
+name = "taxi-web"
+description = "Open Street Map web GUI + axum harness for end-to-end testing of the mesh taxi workflow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+taxi-core.workspace = true
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+veilid-core.workspace = true
+h3o.workspace = true

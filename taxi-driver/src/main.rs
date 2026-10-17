@@ -3,11 +3,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use clap::Parser;
 use h3o::CellIndex;
 use taxi_core::{
-    BargainAccept, BargainDecline, BargainMessage, DetailsRequest, DriverOffer, GeoPoint, MAX_ZONE,
-    Node, NodeConfig, ObfuscatedRideRequest, PreciseRouteDetails, RatingClaim, board_label,
-    board_record_key, scan_plan,
+    BargainStep, GeoPoint, MAX_ZONE, Node, NodeConfig, ObfuscatedRideRequest, RatingClaim,
+    bargain_request, board_label, collect_board_requests,
 };
-use veilid_core::{DHTReportScope, RoutingContext, Target, VeilidAPI};
 
 /// How long to wait for the node to become attached and network-ready.
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(180);
@@ -61,8 +59,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let board_cell = driver.search_cell();
 
     println!("Starting driver node (veilid)...");
-    let cfg = NodeConfig::new("mesh_taxi_driver");
-    let node = Node::start(cfg_with(&cli, cfg)).await?;
+    let mut cfg = NodeConfig::new("mesh_taxi_driver");
+    cfg.storage_dir = cli.data_dir.clone();
+    let node = Node::start(cfg).await?;
     node.wait_network_ready(ATTACH_TIMEOUT).await?;
     println!("Node attached to the network.");
 
@@ -78,7 +77,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         let now = now_secs();
-        let mut requests = collect_requests(&routing, board_cell, cli.max_zone).await;
+        let mut requests = collect_board_requests(&routing, board_cell, cli.max_zone, |line| {
+            println!("[DRV] {}", line)
+        })
+        .await;
         requests.retain(|request| request.expires_at > now);
 
         let mut new_any = false;
@@ -87,7 +89,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 new_any = true;
                 report_request(&driver, board_cell, &request);
                 if cli.offer {
-                    bargain(&node, &routing, &request, &driver_cell(board_cell), &cli).await;
+                    let steps = bargain_request(
+                        node.api(),
+                        &routing,
+                        &request,
+                        cli.price,
+                        RatingClaim::now(cli.rides, cli.average_rating, now),
+                        cli.min_price,
+                    )
+                    .await;
+                    for step in steps {
+                        report_step(&driver, step);
+                    }
                 }
             }
         }
@@ -109,15 +122,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cfg_with(cli: &Cli, mut cfg: NodeConfig) -> NodeConfig {
-    cfg.storage_dir = cli.data_dir.clone();
-    cfg
-}
-
-fn driver_cell(board_cell: CellIndex) -> GeoPoint {
-    GeoPoint::from_cell(board_cell)
-}
-
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -129,7 +133,7 @@ fn report_request(driver: &GeoPoint, center: CellIndex, request: &ObfuscatedRide
     let zone = taxi_core::zone_of(center, request.from_point().search_cell(), MAX_ZONE);
     let distance = driver.distance_km(&request.from_point());
     println!(
-        "  -> [Found!] {}\n     route {:x} -> {:x}, price {}\n     pickup is {:.2} km away, board zone {:?}. Import the request route_blob to connect.",
+        "  -> [Found!] {}\n     route {:x} -> {:x}, price {}\n     pickup is {:.2} km away, board zone {:?}. Bargaining over the route blob...",
         request.request_id,
         request.from_cell_res9,
         request.to_cell_res9,
@@ -139,234 +143,45 @@ fn report_request(driver: &GeoPoint, center: CellIndex, request: &ObfuscatedRide
     );
 }
 
-/// Driver -> passenger bargain over the imported route blob of a request:
-///
-/// 1. `app_call(Offer)` over the imported private route.
-/// 2. On `Accept` / agreed `Counter`: `app_call(DetailsRequest)`.
-/// 3. The passenger answers with `PreciseRouteDetails` once its rating
-///    validation passed for the driver offer.
-async fn bargain(
-    node: &Node,
-    routing: &RoutingContext,
-    request: &ObfuscatedRideRequest,
-    driver: &GeoPoint,
-    cli: &Cli,
-) {
-    let api: &VeilidAPI = node.api();
-    println!(
-        "[DRV] importing route blob of {} for the bargain call",
-        request.request_id
-    );
-    let route_id = match api.import_remote_private_route(request.route_blob.clone()) {
-        Ok(route_id) => route_id,
-        Err(e) => {
-            println!("[DRV] route import failed: {}", e);
-            return;
-        }
-    };
-
-    let offer = BargainMessage::Offer(DriverOffer {
-        request_id: request.request_id.clone(),
-        counter_price: cli.price.unwrap_or(request.price_offered),
-        rating: RatingClaim::now(cli.rides, cli.average_rating, now_secs()),
-    });
-
-    let staged = match send_call(routing, &route_id, &offer).await {
-        Ok(reply) => reply,
-        Err(e) => {
-            println!("[DRV] offer call failed: {}", e);
-            release(api, &route_id);
-            return;
-        }
-    };
-
-    match staged {
-        BargainMessage::Accept(BargainAccept { request_id }) => {
-            println!("[DRV] passenger accepted the offer for {}", request_id);
-            settle(routing, &route_id, request, driver).await;
-        }
-        BargainMessage::Counter(counter) => {
-            if counter.price >= cli.min_price {
-                println!(
-                    "[DRV] passenger countered: {}, driver agrees",
-                    counter.price
-                );
-                settle(routing, &route_id, request, driver).await;
-            } else {
-                println!(
-                    "[DRV] passenger counter {} below driver floor {}, declined",
-                    counter.price, cli.min_price
-                );
-                decline(
-                    routing,
-                    &route_id,
-                    &request.request_id,
-                    "counter below driver floor",
-                )
-                .await;
-                release(api, &route_id);
-            }
-        }
-        BargainMessage::Decline(BargainDecline { reason, request_id }) => {
+fn report_step(driver: &GeoPoint, step: BargainStep) {
+    match step {
+        BargainStep::OfferSent(offer) => {
             println!(
-                "[DRV] passenger declined offer for {}: {}",
-                request_id, reason
-            );
-            release(api, &route_id);
-        }
-        other => {
-            println!("[DRV] unexpected reply: {}", english(&other));
-            release(api, &route_id);
-        }
-    }
-}
-
-/// Stage 2+: ask for the precise route and print the exchanged exact points.
-async fn settle(
-    routing: &RoutingContext,
-    route_id: &veilid_core::RouteId,
-    request: &ObfuscatedRideRequest,
-    driver: &GeoPoint,
-) {
-    let ask = BargainMessage::DetailsRequest(DetailsRequest {
-        request_id: request.request_id.clone(),
-    });
-    let reply = match send_call(routing, route_id, &ask).await {
-        Ok(reply) => reply,
-        Err(e) => {
-            println!("[DRV] details call failed: {}", e);
-            return;
-        }
-    };
-
-    match reply {
-        BargainMessage::Details(PreciseRouteDetails {
-            from_point,
-            to_point,
-        }) => {
-            println!(
-                "[DRV] PreciseRouteDetails received! pickup {:.6},{:.6} ({:.2} km away), target {:.6},{:.6}",
-                from_point.latitude,
-                from_point.longitude,
-                driver.distance_km(&from_point),
-                to_point.latitude,
-                to_point.longitude
+                "[DRV] offer sent over the imported route blob (price {}, rides {}, rating {})",
+                offer.counter_price, offer.rating.rides, offer.rating.average_milli
             );
         }
-        BargainMessage::Decline(BargainDecline { reason, request_id }) => {
-            println!("[DRV] details declined for {}: {}", request_id, reason);
-        }
-        other => println!("[DRV] unexpected details reply: {}", english(&other)),
-    }
-}
-
-async fn decline(
-    routing: &RoutingContext,
-    route_id: &veilid_core::RouteId,
-    request_id: &str,
-    reason: &str,
-) {
-    let message = BargainMessage::Decline(BargainDecline {
-        request_id: request_id.to_string(),
-        reason: reason.to_string(),
-    });
-    if let Err(e) = send_call(routing, route_id, &message).await {
-        println!("[DRV] decline call failed: {}", e);
-    }
-}
-
-async fn send_call(
-    routing: &RoutingContext,
-    route_id: &veilid_core::RouteId,
-    message: &BargainMessage,
-) -> Result<BargainMessage, Box<dyn std::error::Error>> {
-    let bytes = routing
-        .app_call(Target::RouteId(route_id.clone()), message.encode()?)
-        .await?;
-    BargainMessage::decode(&bytes).map_err(Into::into)
-}
-
-fn release(api: &VeilidAPI, route_id: &veilid_core::RouteId) {
-    if let Err(e) = api.release_private_route(route_id.clone()) {
-        println!("[DRV] route release failed: {}", e);
-    }
-}
-
-fn english(message: &BargainMessage) -> &'static str {
-    match message {
-        BargainMessage::Offer(_) => "Offer",
-        BargainMessage::Counter(_) => "Counter",
-        BargainMessage::Accept(_) => "Accept",
-        BargainMessage::Decline(_) => "Decline",
-        BargainMessage::DetailsRequest(_) => "DetailsRequest",
-        BargainMessage::Details(_) => "Details",
-    }
-}
-
-/// Scans the board record of every cell within `max_zone` of `center`.
-async fn collect_requests(
-    routing: &RoutingContext,
-    center: CellIndex,
-    max_zone: u32,
-) -> Vec<ObfuscatedRideRequest> {
-    let mut requests = Vec::new();
-
-    for zone in scan_plan(center, max_zone) {
-        for cell in zone.cells() {
-            let record_key = board_record_key(*cell);
+        BargainStep::AcceptReceived(accept) => {
             println!(
-                "[DRV] zone {} scanning {} ({})",
-                zone.id(),
-                board_label(*cell),
-                record_key
+                "[DRV] passenger accepted the offer for {}",
+                accept.request_id
             );
-
-            if routing
-                .open_dht_record(record_key.clone(), None)
-                .await
-                .is_err()
-            {
-                continue;
-            }
-
-            let report = match routing
-                .inspect_dht_record(record_key.clone(), None, DHTReportScope::SyncGet)
-                .await
-            {
-                Ok(report) => report,
-                Err(e) => {
-                    println!("     inspect failed: {}", e);
-                    let _ = routing.close_dht_record(record_key.clone()).await;
-                    continue;
-                }
-            };
-
-            for (subkey, local_seq, network_seq) in report
-                .subkeys()
-                .iter()
-                .zip(report.local_seqs().iter())
-                .zip(report.network_seqs().iter())
-                .map(|((sk, lseq), nseq)| (sk, lseq, nseq))
-            {
-                if network_seq.is_none() && local_seq.is_none() {
-                    continue;
-                }
-                let Some(dht_value) = routing
-                    .get_dht_value(record_key.clone(), subkey, false)
-                    .await
-                    .ok()
-                    .flatten()
-                else {
-                    continue;
-                };
-                if let Ok(request) = ObfuscatedRideRequest::decode(dht_value.data()) {
-                    requests.push(request);
-                }
-            }
-
-            let _ = routing.close_dht_record(record_key).await;
         }
+        BargainStep::CounterReceived(counter) => {
+            println!(
+                "[DRV] passenger countered with {}, driver agrees",
+                counter.price
+            );
+        }
+        BargainStep::DeclineReceived(decline) => {
+            println!(
+                "[DRV] passenger declined for {}: {}",
+                decline.request_id, decline.reason
+            );
+        }
+        BargainStep::DetailsRequestSent(ask) => {
+            println!("[DRV] asking for the precise route for {}", ask.request_id);
+        }
+        BargainStep::DetailsReceived(details) => {
+            println!(
+                "[DRV] PreciseRouteDetails received! pickup {:.6},{:.6}, {:.2} km away, target {:.6},{:.6}",
+                details.from_point.latitude,
+                details.from_point.longitude,
+                driver.distance_km(&details.from_point),
+                details.to_point.latitude,
+                details.to_point.longitude
+            );
+        }
+        BargainStep::CallFailed(reason) => println!("[DRV] {}", reason),
     }
-
-    requests
 }

@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mesh Taxi — OSM test GUI</title>
+<link
+  rel="stylesheet"
+  href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.min.css"
+/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.min.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; font: 13px/1.4 system-ui, sans-serif; }
+  #layout { display: flex; height: 100%; }
+  #map { flex: 1; }
+  #panel {
+    width: 360px; padding: 12px; overflow-y: auto; background: #101418;
+    color: #d8dee6; box-sizing: border-box;
+  }
+  #panel h1 { font-size: 15px; margin: 0 0 8px; }
+  #panel section { margin-bottom: 14px; padding: 8px; border: 1px solid #2a323c; border-radius: 6px; }
+  #panel label { display: block; margin: 6px 0 2px; color: #9fb0c3; }
+  #panel input, #panel button { width: 100%; box-sizing: border-box; padding: 5px; margin-bottom: 4px; }
+  #panel button { background: #2f6fed; color: white; border: 0; border-radius: 4px; cursor: pointer; padding: 7px; }
+  #panel button.green { background: #2e9e5b; }
+  #transcript { height: 180px; overflow-y: auto; background: #0b0e11; padding: 6px;
+    white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 11px; }
+  .ride-item { padding: 6px 8px; margin-bottom: 6px; border: 1px solid #2a323c; border-radius: 5px; }
+  .ride-item button { width: auto; padding: 3px 10px; margin: 4px 0 0; }
+  .muted { color: #77848f; }
+</style>
+</head>
+<body>
+<div id="layout">
+  <div id="map"></div>
+  <div id="panel">
+    <h1>mesh-taxi OSM test GUI</h1>
+
+    <section>
+      <button id="btn-clear">Reset markers</button>
+      <div class="muted">Click the map: 1st click sets the pickup, 2nd the target.</div>
+    </section>
+
+    <section>
+      <label>Offered price (satoshi)</label>
+      <input id="price" type="number" value="25000" />
+      <label>Request TTL (seconds)</label>
+      <input id="ttl" type="number" value="3600" />
+      <label>Passenger price floor (0 = offered price)</label>
+      <input id="min-price" type="number" value="0" />
+      <label>Driver rating floor in milli-units (0 = open network)</label>
+      <input id="min-rating" type="number" value="0" />
+      <button id="btn-publish" class="green">1 · Publish ride request</button>
+    </section>
+
+    <section>
+      <label>Driver latitude</label>
+      <input id="drv-lat" type="number" value="48.877989" step="0.000001" />
+      <label>Driver longitude</label>
+      <input id="drv-lon" type="number" value="2.282461" step="0.000001" />
+      <label>Max scan zone</label>
+      <input id="max-zone" type="number" value="3" min="1" />
+      <label>Driver claimed rides / rating</label>
+      <input id="drv-rdsn" type="text" value="40 / 4600" />
+      <button id="btn-scan">2 · Scan zones</button>
+    </section>
+
+    <section id="rides"></section>
+
+    <section>
+      <h3 style="margin:4px 0;font-size:13px">Transcript</h3>
+      <div id="transcript"></div>
+      <button id="btn-empty" style="margin-top:6px">Clear transcript</button>
+    </section>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+const transcriptEl = document.getElementById("transcript");
+const ridesEl = document.getElementById("rides");
+const markers = { pickup: null, target: null, driver: null };
+
+const map = L.map("map").setView([48.858246, 2.294495], 14);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
+
+let clicks = 0;
+map.on("click", (e) => {
+  if (clicks % 2 === 0) setMarker("pickup", e.latlng, "Pickup");
+  else setMarker("target", e.latlng, "Target");
+  clicks++;
+});
+
+function setMarker(kind, latlng, label) {
+  if (markers[kind]) map.removeLayer(markers[kind]);
+  markers[kind] = L.marker(latlng, { title: label, draggable: true }).addTo(map);
+}
+
+function readPoints() {
+  if (!markers.pickup || !markers.target) {
+    say("mark both the pickup and the target on the map first");
+    return null;
+  }
+  const p = markers.pickup.getLatLng(), t = markers.target.getLatLng();
+  return {
+    from_lat: p.lat, from_lon: p.lng,
+    to_lat: t.lat, to_lon: t.lng,
+    price: num("price"), ttl_secs: num("ttl"),
+    min_price: num("min-price") || null,
+    min_rating: num("min-rating"),
+  };
+}
+
+function num(id) { return Number(document.getElementById(id).value); }
+function txt(id) { return document.getElementById(id).value; }
+
+function say(line) {
+  const el = document.createElement("div");
+  el.textContent = line;
+  transcriptEl.appendChild(el);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+for (const log of ["[PASS] passenger+driver veilid nodes are attached"]) say(log);
+
+async function post(url, body) {
+  const response = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : "{}",
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) { say("HTTP " + response.status + " " + (data.error || "")); throw new Error(data.error); }
+  return data;
+}
+
+document.getElementById("btn-clear").onclick = () => {
+  for (const key of Object.keys(markers)) {
+    if (markers[key]) { map.removeLayer(markers[key]); markers[key] = null; }
+  }
+  clicks = 0;
+};
+
+document.getElementById("btn-empty").onclick = () => { transcriptEl.innerHTML = ""; };
+
+document.getElementById("btn-publish").onclick = async () => {
+  const body = readPoints();
+  if (!body) return;
+  try {
+    const reply = await post("/api/ride", body);
+    say(`[PASS] published ${reply.request_id} on board ${reply.board_label} subkey ${reply.subkey}`);
+    for (const log of reply.transcript) say(log);
+  } catch (_) { /* logged */ }
+};
+
+document.getElementById("btn-scan").onclick = async () => {
+  try {
+    const reply = await post("/api/driver/scan", {
+      lat: num("drv-lat"), lon: num("drv-lon"), max_zone: num("max-zone"),
+    });
+    say(`[DRV] scan finished, ${reply.requests.length} request(s) visible`);
+    for (const log of reply.transcript) say(log);
+    ridesEl.innerHTML = "";
+    for (const request of reply.requests) renderRide(request);
+  } catch (_) { /* logged */ }
+};
+
+function renderRide(request) {
+  const item = document.createElement("div");
+  item.className = "ride-item";
+  item.innerHTML =
+    `<b>${request.request_id.slice(0, 8)}</b> · ${request.price} sat · ${request.distance_km.toFixed(2)} km · zone ${request.zone}<br>` +
+    `<span class="muted">from ≈ ${request.from_point.latitude.toFixed(5)}, ${request.from_point.longitude.toFixed(5)}</span>`;
+  const button = document.createElement("button");
+  button.textContent = "Bargain";
+  button.onclick = () => bargain(request.request_id);
+  item.appendChild(button);
+  ridesEl.appendChild(item);
+}
+
+async function bargain(requestId) {
+  try {
+    const reply = await post("/api/driver/offer", {
+      request_id: requestId,
+      lat: num("drv-lat"), lon: num("drv-lon"),
+      min_price: 0,
+      rides: 40, average_rating: 4600,
+    });
+    for (const step of reply.transcript) say(step);
+    if (reply.details) {
+      const details = reply.details;
+      setMarker("driver", { lat: details.from_point.latitude, lng: details.from_point.longitude }, "Pickup precise");
+      map.setView([details.from_point.latitude, details.from_point.longitude], 16);
+      say("[DRV] precise pickup shown on the map, target at " +
+        details.to_point.latitude.toFixed(5) + ", " + details.to_point.longitude.toFixed(5));
+    }
+  } catch (_) { /* logged */ }
+}
+</script>
+</body>
+</html>

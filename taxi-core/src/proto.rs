@@ -34,6 +34,10 @@ impl ObfuscatedRideRequest {
         GeoPoint::from_cell(self.from_cell())
     }
 
+    pub fn to_point(&self) -> GeoPoint {
+        GeoPoint::from_cell(self.to_cell())
+    }
+
     pub fn encode(&self) -> CoreResult<Vec<u8>> {
         postcard::to_allocvec(self).map_err(|e| CoreError::Encoding(e.to_string()))
     }

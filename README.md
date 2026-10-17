@@ -9,9 +9,10 @@ hexagon indices and Veilid opaque record keys.
 
 | Crate            | Content                                                                 |
 | ---------------- | ----------------------------------------------------------------------- |
-| `taxi-core`      | Geo core: H3 cells, obfuscated wire messages, DHT boards, zone search, Veilid node helper |
+| `taxi-core`      | Geo core: H3 cells, obfuscated wire messages, DHT boards, zone search, Veilid node helper, bargain handshake |
 | `taxi-passenger` | Bin: creates an E2E private route and publishes an obfuscated ride request |
-| `taxi-driver`    | Bin: scans H3 zones around its position and finds ride requests          |
+| `taxi-driver`    | Bin: scans H3 zones around its position, finds ride requests and bargains over their route blobs |
+| `taxi-web`       | Axum harness + OpenStreetMap (Leaflet) GUI for clickable end-to-end testing on one machine |
 
 ## How the geo core works
 
@@ -77,6 +78,19 @@ pickup/target coordinates. The passenger stays online serving
 `app_call`s (offer -> accept/counter/decline -> details). Ctrl-C stops either
 node.
 
+## Clickable testing with the OSM GUI
+
+The `taxi-web` crate runs the same workflow on one machine: it starts the
+passenger and the driver as two in-process Veilid nodes and serves a
+Leaflet/OpenStreetMap UI where you click pickup and target, publish the ride
+request, scan zones as the driver and run the bargain until the precise
+route appears on the map.
+
+```bash
+cargo run -p taxi-web             # then open http://localhost:8088
+PORT=9000 cargo run -p taxi-web   # alternate port
+```
+
 ## Tests
 
 ```bash
@@ -93,4 +107,5 @@ overlap, zone-3 reach), the demo distances and the rating/bargain decisions.
 - [x] Driver -> passenger `app_call` over the imported route blob
 - [x] Offer/bargain protocol and `PreciseRouteDetails` exchange after rating validation
 - [ ] Reputation ledger on per-rating subkeys (beyond the self-reported `RatingClaim`)
+- [x] OSM web GUI for one-machine end-to-end testing (`taxi-web`)
 - [ ] Proper signature mobile PWA
