@@ -1,0 +1,15 @@
+[package]
+name = "veilid_taxi_proto"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = "4.6.7"
+ctrlc = "3.5.2"
+data-encoding = "2.11.1"
+h3o = "0.11.0"
+serde = { version = "1.0.229", features = ["derive"] }
+postcard = { version = "1.0", features = ["alloc"] }
+tokio = { version = "1.53.3", features = ["full"] }
+uuid = { version = "1.28.0", features = ["v4"] }
+veilid-core = "0.5.7"
