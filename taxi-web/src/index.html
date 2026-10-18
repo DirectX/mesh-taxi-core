@@ -84,12 +84,30 @@ window.onerror = (msg, src, line, col) => {
   return false;
 };
 const ridesEl = document.getElementById("rides");
-const markers = { pickup: null, target: null, driver: null };
+const markers = { pickup: null, target: null, driver: null, deal: null };
+const lines = {};
 
 const map = L.map("map").setView([48.858246, 2.294495], 14);
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 }).addTo(map);
+
+function drawLine(key, a, b, style, tooltip) {
+  removeLine(key);
+  const line = L.polyline([a, b], style).addTo(map);
+  if (tooltip) line.bindTooltip(tooltip, { sticky: true });
+  lines[key] = line;
+}
+
+function removeLine(key) {
+  if (lines[key]) { map.removeLayer(lines[key]); delete lines[key]; }
+}
+
+function removeLinesWithPrefix(prefix) {
+  for (const key of Object.keys(lines)) {
+    if (key.startsWith(prefix)) removeLine(key);
+  }
+}
 
 let clicks = 0;
 map.on("click", (e) => {
@@ -101,6 +119,18 @@ map.on("click", (e) => {
 function setMarker(kind, latlng, label) {
   if (markers[kind]) map.removeLayer(markers[kind]);
   markers[kind] = L.marker(latlng, { title: label, draggable: true }).addTo(map);
+  markers[kind].bindTooltip(label);
+  markers[kind].on("drag", updatePreview);
+  updatePreview();
+}
+
+function updatePreview() {
+  if (markers.pickup && markers.target) {
+    drawLine("preview", markers.pickup.getLatLng(), markers.target.getLatLng(),
+      { color: "#2f6fed", dashArray: "6 6", weight: 2 }, "planned route");
+  } else {
+    removeLine("preview");
+  }
 }
 
 function readPoints() {
@@ -147,6 +177,8 @@ document.getElementById("btn-clear").onclick = () => {
   for (const key of Object.keys(markers)) {
     if (markers[key]) { map.removeLayer(markers[key]); markers[key] = null; }
   }
+  for (const key of Object.keys(lines)) removeLine(key);
+  ridesEl.innerHTML = "";
   clicks = 0;
 };
 
@@ -159,6 +191,12 @@ document.getElementById("btn-publish").onclick = async () => {
     const reply = await post("/api/ride", body);
     say(`[PASS] published ${reply.request_id} on board ${reply.board_label} subkey ${reply.subkey}`);
     for (const log of reply.transcript) say(log);
+    removeLine("preview");
+    drawLine("published:" + reply.request_id,
+      [body.from_lat, body.from_lon], [body.to_lat, body.to_lon],
+      { color: "#2f6fed", weight: 3, opacity: 0.85 },
+      `ride ${reply.request_id.slice(0, 8)} · ${body.price} sat`);
+    map.fitBounds(L.latLngBounds([[body.from_lat, body.from_lon], [body.to_lat, body.to_lon]]).pad(0.35));
   } catch (_) { /* logged */ }
 };
 
@@ -167,8 +205,25 @@ document.getElementById("btn-scan").onclick = async () => {
     const reply = await post("/api/driver/scan", {
       lat: num("drv-lat"), lon: num("drv-lon"), max_zone: num("max-zone"),
     });
-    say(`[DRV] scan finished, ${reply.requests.length} request(s) visible`);
-    for (const log of reply.transcript) say(log);
+    say(`[DRV] scan finished, ${reply.requests.length} request(s) visible (drawing on map)`);
+
+    if (markers.driver) map.removeLayer(markers.driver);
+    const drv = [num("drv-lat"), num("drv-lon")];
+    markers.driver = L.circleMarker(drv, {
+      radius: 9, color: "#2e9e5b", fillColor: "#2e9e5b", fillOpacity: 0.25, weight: 2,
+    }).bindTooltip("driver scan origin").addTo(map);
+
+    removeLinesWithPrefix("shown:");
+    for (const request of reply.requests) {
+      drawLine("shown:" + request.request_id,
+        [request.from_point.latitude, request.from_point.longitude],
+        [request.to_point.latitude, request.to_point.longitude],
+        { color: "#e6a23c", weight: 3, opacity: 0.75, dashArray: "2 8" },
+        `visible ${request.request_id.slice(0, 8)} · ${request.price} sat · zone ${request.zone}`);
+    }
+    const pts = [drv, ...reply.requests.map(r => [r.from_point.latitude, r.from_point.longitude])];
+    if (pts.length > 1) map.fitBounds(L.latLngBounds(pts).pad(0.35));
+
     ridesEl.innerHTML = "";
     for (const request of reply.requests) renderRide(request);
   } catch (_) { /* logged */ }
@@ -183,8 +238,19 @@ function renderRide(request) {
   const button = document.createElement("button");
   button.textContent = "Bargain";
   button.onclick = () => bargain(request.request_id);
+  const focus = document.createElement("button");
+  focus.textContent = "Show";
+  focus.style.background = "#556";
+  focus.style.marginLeft = "6px";
+  focus.onclick = () => zoomTo(request.request_id);
   item.appendChild(button);
+  item.appendChild(focus);
   ridesEl.appendChild(item);
+}
+
+function zoomTo(requestId) {
+  const line = lines["shown:" + requestId] || lines["published:" + requestId];
+  if (line) map.fitBounds(line.getBounds().pad(0.4));
 }
 
 async function bargain(requestId) {
@@ -198,10 +264,16 @@ async function bargain(requestId) {
     for (const step of reply.transcript) say(step);
     if (reply.details) {
       const details = reply.details;
-      setMarker("driver", { lat: details.from_point.latitude, lng: details.from_point.longitude }, "Pickup precise");
-      map.setView([details.from_point.latitude, details.from_point.longitude], 16);
-      say("[DRV] precise pickup shown on the map, target at " +
-        details.to_point.latitude.toFixed(5) + ", " + details.to_point.longitude.toFixed(5));
+      const from = [details.from_point.latitude, details.from_point.longitude];
+      const to = [details.to_point.latitude, details.to_point.longitude];
+      if (markers.deal) map.removeLayer(markers.deal);
+      markers.deal = L.marker(from).bindTooltip("deal: precise pickup").addTo(map);
+      drawLine("deal:" + requestId, from, to,
+        { color: "#2e9e5b", weight: 4, opacity: 0.95 },
+        `deal ${requestId.slice(0, 8)} · accepted route`);
+      removeLine("shown:" + requestId);
+      map.fitBounds(L.latLngBounds([from, to]).pad(0.35));
+      say("[DRV] deal drawn on the map: green line pickup → target");
     }
   } catch (_) { /* logged */ }
 }

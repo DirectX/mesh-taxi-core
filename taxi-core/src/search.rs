@@ -147,11 +147,8 @@ async fn probe_cell<F: FnMut(String)>(
         record_key
     ));
 
-    if routing
-        .open_dht_record(record_key.clone(), None)
-        .await
-        .is_err()
-    {
+    if let Err(e) = routing.open_dht_record(record_key.clone(), None).await {
+        log(format!("open failed for {}: {}", board_label(cell), e));
         return Vec::new();
     }
 
@@ -159,7 +156,22 @@ async fn probe_cell<F: FnMut(String)>(
         .inspect_dht_record(record_key.clone(), None, DHTReportScope::SyncGet)
         .await
     {
-        Ok(report) => report,
+        Ok(report) => {
+            let live = report
+                .subkeys()
+                .iter()
+                .zip(report.network_seqs().iter())
+                .filter(|(_, n)| n.is_some())
+                .count();
+            if live > 0 {
+                log(format!(
+                    "board {} has {} live remote subkey(s)",
+                    board_label(cell),
+                    live
+                ));
+            }
+            report
+        }
         Err(e) => {
             log(format!("inspect failed: {}", e));
             let _ = routing.close_dht_record(record_key.clone()).await;
@@ -178,20 +190,50 @@ async fn probe_cell<F: FnMut(String)>(
         if network_seq.is_none() && local_seq.is_none() {
             continue;
         }
-        let Some(dht_value) = routing
-            .get_dht_value(record_key.clone(), subkey, false)
+        // `force_refresh=true` when the local cache lacks the value: a fresh
+        // remote write reports seq 0 which equals the local seq cache, so the
+        // conservative read would return nothing without the network fetch.
+        let force_refresh = local_seq.is_none();
+        match routing
+            .get_dht_value(record_key.clone(), subkey, force_refresh)
             .await
-            .ok()
-            .flatten()
-        else {
-            continue;
-        };
-        if let Ok(request) = ObfuscatedRideRequest::decode(dht_value.data()) {
-            requests.push(request);
+        {
+            Ok(Some(dht_value)) => match ObfuscatedRideRequest::decode(dht_value.data()) {
+                Ok(request) => requests.push(request),
+                Err(e) => log(format!(
+                    "decode of {}#{} failed: {}",
+                    board_label(cell),
+                    subkey,
+                    e
+                )),
+            },
+            Ok(None) => {
+                log(format!(
+                    "get value of {}#{} returned none (network seq {:?})",
+                    board_label(cell),
+                    subkey,
+                    network_seq
+                ));
+            }
+            Err(e) => {
+                log(format!(
+                    "get value of {}#{} failed: {}",
+                    board_label(cell),
+                    subkey,
+                    e
+                ));
+            }
         }
     }
 
     let _ = routing.close_dht_record(record_key).await;
+    if !requests.is_empty() {
+        log(format!(
+            "decoded {} request(s) from {}",
+            requests.len(),
+            board_label(cell)
+        ));
+    }
     requests
 }
 
