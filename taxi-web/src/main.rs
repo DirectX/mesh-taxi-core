@@ -77,20 +77,68 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(index))
-        .route("/leaflet.css", get(|| async { ([(header::CONTENT_TYPE, "text/css")], include_str!("assets/leaflet.min.css")) }))
-        .route("/leaflet.js", get(|| async { ([(header::CONTENT_TYPE, "application/javascript")], include_str!("assets/leaflet.min.js")) }))
-        .route("/images/marker-icon.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], include_bytes!("assets/images/marker-icon.png")) }))
-        .route("/images/marker-icon-2x.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], include_bytes!("assets/images/marker-icon-2x.png")) }))
-        .route("/images/marker-shadow.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], include_bytes!("assets/images/marker-shadow.png")) }))
+        .route(
+            "/leaflet.css",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/css")],
+                    include_str!("assets/leaflet.min.css"),
+                )
+            }),
+        )
+        .route(
+            "/leaflet.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("assets/leaflet.min.js"),
+                )
+            }),
+        )
+        .route(
+            "/images/marker-icon.png",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "image/png")],
+                    include_bytes!("assets/images/marker-icon.png"),
+                )
+            }),
+        )
+        .route(
+            "/images/marker-icon-2x.png",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "image/png")],
+                    include_bytes!("assets/images/marker-icon-2x.png"),
+                )
+            }),
+        )
+        .route(
+            "/images/marker-shadow.png",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "image/png")],
+                    include_bytes!("assets/images/marker-shadow.png"),
+                )
+            }),
+        )
         .route("/api/ride", post(publish_ride))
         .route("/api/driver/scan", post(driver_scan))
         .route("/api/driver/offer", post(driver_offer))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .expect("bind port");
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(listener) => listener,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            eprintln!(
+                "web port {port} already in use: another taxi-web instance is running\n\
+                 stop it (killall taxi-web) or pick another: PORT=8089 cargo run -p taxi-web"
+            );
+            std::process::exit(1);
+        }
+        Err(e) => panic!("bind port {port}: {e}"),
+    };
     println!(
         "OSM test GUI listening on http://localhost:{} (Ctrl-C stops)",
         port
