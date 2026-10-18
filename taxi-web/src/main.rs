@@ -51,17 +51,12 @@ async fn main() {
     let mut driver_cfg = NodeConfig::new("mesh_taxi_web_driver");
     driver_cfg.namespace = "web".into();
 
-    println!("Starting passenger + driver veilid nodes (in-process)...");
+    println!("Starting driver + passenger veilid nodes (in-process)...");
+    let driver_node = Node::start(driver_cfg).await.expect("driver node");
+    wait_ready(&driver_node, "driver").await;
     let mut passenger_node = Node::start(passenger_cfg).await.expect("passenger node");
-    passenger_node
-        .wait_network_ready(Duration::from_secs(180))
-        .await
-        .expect("passenger attach");
-    let driver = Arc::new(Node::start(driver_cfg).await.expect("driver node"));
-    driver
-        .wait_network_ready(Duration::from_secs(180))
-        .await
-        .expect("driver attach");
+    wait_ready(&passenger_node, "passenger").await;
+    let driver = Arc::new(driver_node);
     println!("Both nodes attached to the network.");
 
     // Draining the update stream before moving the node into the shared state.
@@ -325,8 +320,25 @@ async fn driver_scan(
     let board_cell = driver.search_cell();
 
     let routing = state.driver.routing_context().await.map_err(bad_request)?;
-    let mut requests = collect_board_requests(&routing, board_cell, max_zone, |_| {}).await;
+    let t0 = std::time::Instant::now();
+    let t0 = std::sync::Arc::new(t0);
+    let mut requests = collect_board_requests(&routing, board_cell, max_zone, {
+        let t0 = t0.clone();
+        move |line| {
+            println!("[scan {:?}] {}", t0.elapsed(), line);
+        }
+    })
+    .await;
+    println!("[scan total] {:?}", t0.elapsed());
     requests.retain(|request| request.expires_at > now_secs());
+    {
+        let mut known = state.requests.lock().await;
+        for request in &requests {
+            known
+                .entry(request.request_id.clone())
+                .or_insert(request.clone());
+        }
+    }
 
     let transcript = vec![format!("scan finished: {} request(s)", requests.len())];
     let mut views = Vec::new();
@@ -460,6 +472,32 @@ fn describe_step(driver: &GeoPoint, step: &BargainStep) -> (String, Option<serde
             })),
         ),
         BargainStep::CallFailed(reason) => (reason.clone(), None),
+    }
+}
+
+/// Waits for attach while printing attachment state transitions, so a slow
+/// or stalled node shows where it stops instead of a silent 180 s timeout.
+async fn wait_ready(node: &Node, role: &'static str) {
+    let timeout = Duration::from_secs(180);
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut last = String::new();
+    loop {
+        let state = node.api().get_state().await.expect("veilid state");
+        let rendered = format!(
+            "{:?} public_ready={}",
+            state.attachment.state, state.attachment.public_internet_ready
+        );
+        if rendered != last {
+            println!("[web] {} attach: {}", role, rendered);
+            last = rendered;
+        }
+        if state.attachment.public_internet_ready && state.attachment.state.is_attached() {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("{} attach: Timeout(180s), last state: {}", role, last);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
