@@ -16,14 +16,15 @@ use axum::{
     response::{Html, Json},
     routing::{get, post},
 };
+use h3o::CellIndex;
 use tokio::sync::Mutex;
 use veilid_core::VeilidUpdate;
 
 use taxi_core::{
     BargainMessage, BargainStep, GeoPoint, MAX_ZONE, Node, NodeConfig, ObfuscatedRideRequest,
-    PassengerBargain, RatingClaim, RatingPolicy, bargain_request, board_label,
-    collect_board_requests, open_or_seed_board_record, subkey_for_request, validate_subkey,
-    zone_of,
+    PassengerBargain, RatingClaim, RatingPolicy, bargain_request, board_label, cell_label,
+    collect_board_requests, open_or_seed_board_record, scan_plan, subkey_for_request,
+    validate_subkey, zone_of,
 };
 
 /// Result alias for the JSON endpoints.
@@ -125,6 +126,7 @@ async fn main() {
         .route("/api/ride", post(publish_ride))
         .route("/api/driver/scan", post(driver_scan))
         .route("/api/driver/offer", post(driver_offer))
+        .route("/api/cells", post(cells))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
@@ -512,6 +514,79 @@ fn describe_step(driver: &GeoPoint, step: &BargainStep) -> (String, Option<serde
         ),
         BargainStep::CallFailed(reason) => (reason.clone(), None),
     }
+}
+
+/// Computes cell label prefixes for the H3 overlay endpoints.
+
+#[derive(serde::Serialize)]
+struct CellView {
+    id: String,
+    res: u8,
+    ring: Option<u32>,
+    points: Vec<[f64; 2]>,
+}
+
+#[derive(serde::Serialize)]
+struct CellsReply {
+    zone_cells: Vec<CellView>,
+    position_cells: Vec<CellView>,
+}
+
+#[derive(serde::Deserialize)]
+struct CellsRequest {
+    lat: f64,
+    lon: f64,
+    max_zone: u32,
+    res9: Vec<[f64; 2]>,
+}
+
+/// GET-equivalent POST /api/cells: boundary polygons of every Res 8 board
+/// cell around the driver plan plus the Res 9 position cells of the marked
+/// points, for the H3 hex overlay in the GUI.
+async fn cells(body: Option<Json<CellsRequest>>) -> ApiResult<Json<CellsReply>> {
+    let Json(CellsRequest {
+        lat,
+        lon,
+        max_zone,
+        res9,
+    }) = body.ok_or_else(|| bad_request("missing JSON body"))?;
+    let driver = GeoPoint::new(lat, lon).map_err(bad_request)?;
+
+    let mut zone_cells = Vec::new();
+    for zone in scan_plan(driver.search_cell(), max_zone) {
+        for cell in zone.cells() {
+            zone_cells.push(CellView {
+                id: board_label(*cell),
+                res: 8,
+                ring: Some(zone.id()),
+                points: cell_points(*cell),
+            });
+        }
+    }
+
+    let mut position_cells = Vec::new();
+    for point in res9 {
+        let position = GeoPoint::new(point[0], point[1]).map_err(bad_request)?;
+        let cell = position.position_cell();
+        position_cells.push(CellView {
+            id: cell_label(cell),
+            res: 9,
+            ring: None,
+            points: cell_points(cell),
+        });
+    }
+
+    Ok(Json(CellsReply {
+        zone_cells,
+        position_cells,
+    }))
+}
+
+fn cell_points(cell: CellIndex) -> Vec<[f64; 2]> {
+    cell.boundary()
+        .iter()
+        .map(|ll| [ll.lat(), ll.lng()])
+        .collect()
 }
 
 /// Waits for attach while printing attachment state transitions, so a slow

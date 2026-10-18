@@ -30,7 +30,7 @@ pub use board::{
     open_or_seed_board_record, subkey_for_request, validate_subkey,
 };
 pub use error::{CoreError, CoreResult};
-pub use geo::{GeoPoint, POSITION_RESOLUTION, SEARCH_RESOLUTION, board_label};
+pub use geo::{GeoPoint, POSITION_RESOLUTION, SEARCH_RESOLUTION, board_label, cell_label};
 pub use node::{Node, NodeConfig};
 pub use proto::{ObfuscatedRideRequest, PreciseRouteDetails};
 pub use search::{

@@ -63,6 +63,9 @@
       <label>Driver claimed rides / rating</label>
       <input id="drv-rdsn" type="text" value="40 / 4600" />
       <button id="btn-scan">2 · Scan zones</button>
+      <h3 style="margin:8px 0 2px;font-size:13px">H3 hex overlay</h3>
+      <label style="display:block"><input type="checkbox" id="hex-zone" /> Res 8 board cells of the scan plan</label>
+      <label style="display:block"><input type="checkbox" id="hex-pos" /> Res 9 position cells of marked points</label>
     </section>
 
     <section id="rides"></section>
@@ -121,7 +124,9 @@ function setMarker(kind, latlng, label) {
   markers[kind] = L.marker(latlng, { title: label, draggable: true }).addTo(map);
   markers[kind].bindTooltip(label);
   markers[kind].on("drag", updatePreview);
+  markers[kind].on("dragend", refreshHex);
   updatePreview();
+  refreshHex();
 }
 
 function updatePreview() {
@@ -130,6 +135,48 @@ function updatePreview() {
       { color: "#2f6fed", dashArray: "6 6", weight: 2 }, "planned route");
   } else {
     removeLine("preview");
+  }
+}
+
+const hexes = {};
+
+function drawHex(key, points, style, tooltip) {
+  const fill = style;
+  const poly = L.polygon(points, {
+    color: fill.stroke, weight: 1, opacity: 0.8,
+    fillOpacity: 0.10, interactive: true,
+  }).bindTooltip(tooltip, { sticky: true }).addTo(map);
+  hexes[key] = poly;
+}
+
+function clearHexes() {
+  for (const key of Object.keys(hexes)) { map.removeLayer(hexes[key]); delete hexes[key]; }
+}
+
+async function refreshHex() {
+  const wantZone = document.getElementById("hex-zone").checked;
+  const wantPos = document.getElementById("hex-pos").checked;
+  if (!wantZone && !wantPos) { clearHexes(); return; }
+  const body = {
+    lat: num("drv-lat"), lon: num("drv-lon"), max_zone: num("max-zone"),
+    res9: ["pickup", "target", "deal"]
+      .map((kind) => markers[kind])
+      .filter(Boolean)
+      .map((m) => [m.getLatLng().lat, m.getLatLng().lng]),
+  };
+  let reply;
+  try { reply = await post("/api/cells", body); } catch (_) { return; }
+  clearHexes();
+  if (wantZone) {
+    for (const cell of reply.zone_cells) {
+      drawHex(cell.id, cell.points, { stroke: "#b48c4e" },
+        `board ${cell.id} · zone ${cell.ring}`);
+    }
+  }
+  if (wantPos) {
+    for (const cell of reply.position_cells) {
+      drawHex(cell.id, cell.points, { stroke: "#2f6fed" }, cell.id + " · position");
+    }
   }
 }
 
@@ -178,11 +225,16 @@ document.getElementById("btn-clear").onclick = () => {
     if (markers[key]) { map.removeLayer(markers[key]); markers[key] = null; }
   }
   for (const key of Object.keys(lines)) removeLine(key);
+  clearHexes();
   ridesEl.innerHTML = "";
   clicks = 0;
 };
 
 document.getElementById("btn-empty").onclick = () => { transcriptEl.innerHTML = ""; };
+
+for (const id of ["hex-zone", "hex-pos"]) {
+  document.getElementById(id).onchange = refreshHex;
+}
 
 document.getElementById("btn-publish").onclick = async () => {
   const body = readPoints();
@@ -226,6 +278,7 @@ document.getElementById("btn-scan").onclick = async () => {
 
     ridesEl.innerHTML = "";
     for (const request of reply.requests) renderRide(request);
+    refreshHex();
   } catch (_) { /* logged */ }
 };
 

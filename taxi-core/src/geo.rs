@@ -74,3 +74,8 @@ impl GeoPoint {
 pub fn board_label(cell: CellIndex) -> String {
     format!("{}{}", BOARD_LABEL_PREFIX, cell)
 }
+
+/// Resolution-aware label for any cell: `taxi_v1_res9_89283082ac7ffff`.
+pub fn cell_label(cell: CellIndex) -> String {
+    format!("taxi_v1_res{}_{}", u8::from(cell.resolution()), cell)
+}
