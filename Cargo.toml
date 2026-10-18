@@ -5,6 +5,7 @@ members = [
     "taxi-passenger",
     "taxi-driver",
     "taxi-web",
+    "taxi-android-core",
 ]
 
 [workspace.package]
