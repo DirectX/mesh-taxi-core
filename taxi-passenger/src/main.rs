@@ -3,10 +3,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use clap::Parser;
 use taxi_core::{
     BargainMessage, GeoPoint, Node, NodeConfig, ObfuscatedRideRequest, PassengerBargain,
-    RatingPolicy, board_label, board_owner_keypair, board_record_key, board_schema,
-    subkey_for_request, validate_subkey,
+    RatingPolicy, board_label, open_or_seed_board_record, subkey_for_request, validate_subkey,
 };
-use veilid_core::{CRYPTO_KIND_VLD0, VeilidAPI, VeilidAppCall, VeilidUpdate};
+use veilid_core::{VeilidAPI, VeilidAppCall, VeilidUpdate};
 
 /// How long to wait for the node to become attached and network-ready.
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(180);
@@ -95,26 +94,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // 2. Publish on the board of the pickup Res-8 hexagon.
-    // Boards are shared aggregators with deterministic owner keys, so the
-    // record may already exist (locally cached or on the network): create it
-    // as owner first, then fall back to opening it as a writer.
+    // Boards never publish through the create descriptor (veilid embeds a
+    // random encryption key there) but open under the deterministic
+    // plaintext record key, so reads survive across sessions.
     let board_cell = pickup.search_cell();
-    let board_keypair = board_owner_keypair(board_cell);
-    let record = match routing
-        .create_dht_record(
-            CRYPTO_KIND_VLD0,
-            board_schema(),
-            Some(board_keypair.clone()),
-        )
-        .await
-    {
-        Ok(record) => record,
-        Err(_) => {
-            routing
-                .open_dht_record(board_record_key(board_cell), Some(board_keypair))
-                .await?
-        }
-    };
+    let (record, _board_notes) = open_or_seed_board_record(&routing, board_cell).await?;
 
     let subkey = subkey_for_request(&request.request_id);
     validate_subkey(subkey)?;

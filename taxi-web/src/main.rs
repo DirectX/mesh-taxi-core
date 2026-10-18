@@ -17,12 +17,12 @@ use axum::{
     routing::{get, post},
 };
 use tokio::sync::Mutex;
-use veilid_core::{CRYPTO_KIND_VLD0, VeilidUpdate};
+use veilid_core::VeilidUpdate;
 
 use taxi_core::{
     BargainMessage, BargainStep, GeoPoint, MAX_ZONE, Node, NodeConfig, ObfuscatedRideRequest,
-    PassengerBargain, RatingClaim, RatingPolicy, bargain_request, board_label, board_owner_keypair,
-    board_record_key, board_schema, collect_board_requests, subkey_for_request, validate_subkey,
+    PassengerBargain, RatingClaim, RatingPolicy, bargain_request, board_label,
+    collect_board_requests, open_or_seed_board_record, subkey_for_request, validate_subkey,
     zone_of,
 };
 
@@ -275,24 +275,10 @@ async fn publish_ride(
     ));
 
     let board_cell = pickup.search_cell();
-    let board_keypair = board_owner_keypair(board_cell);
-    let record = match routing
-        .create_dht_record(
-            CRYPTO_KIND_VLD0,
-            board_schema(),
-            Some(board_keypair.clone()),
-        )
+    let (record, board_notes) = open_or_seed_board_record(&routing, board_cell)
         .await
-    {
-        Ok(record) => record,
-        Err(e) => {
-            transcript.push(format!("create as owner failed, opening as writer ({})", e));
-            routing
-                .open_dht_record(board_record_key(board_cell), Some(board_keypair))
-                .await
-                .map_err(bad_request)?
-        }
-    };
+        .map_err(bad_request)?;
+    transcript.extend(board_notes);
 
     let subkey = subkey_for_request(&request.request_id);
     validate_subkey(subkey).map_err(bad_request)?;

@@ -3,8 +3,8 @@ use ed25519_dalek::SigningKey;
 use h3o::CellIndex;
 use sha2::{Digest, Sha256};
 use veilid_core::{
-    BareOpaqueRecordKey, BarePublicKey, BareRecordKey, BareSecretKey, CRYPTO_KIND_VLD0, DHTSchema,
-    KeyPair, RecordKey,
+    BareOpaqueRecordKey, BarePublicKey, BareRecordKey, BareSecretKey, CRYPTO_KIND_VLD0,
+    DHTRecordDescriptor, DHTSchema, KeyPair, RecordKey, RoutingContext, VeilidAPIError,
 };
 
 use crate::error::CoreResult;
@@ -60,6 +60,46 @@ pub fn subkey_for_request(request_id: &str) -> u32 {
     let hash = Sha256::digest(request_id.as_bytes());
     let n = u64::from_be_bytes(hash[..8].try_into().expect("8 bytes from sha256 digest"));
     (n % BOARD_SCHEMA_O_CNT as u64) as u32
+}
+
+/// Opens the board record of `cell`, creating it first when it is virgin.
+///
+/// `create_dht_record` embeds a *random* per-record encryption key into the
+/// returned record key, which makes later sessions unable to decrypt the
+/// values that were written through that descriptor. Boards therefore never
+/// publish through the create descriptor: the local record is created once
+/// (parked, never pointed at the network through its encrypted key) and then
+/// re-opened under the deterministic plaintext record key so that every
+/// session swaps values in the clear.
+///
+/// Returns the descriptor to write through plus human-readable notes.
+pub async fn open_or_seed_board_record(
+    routing: &RoutingContext,
+    cell: CellIndex,
+) -> CoreResult<(DHTRecordDescriptor, Vec<String>)> {
+    let record_key = board_record_key(cell);
+    let owner = board_owner_keypair(cell);
+    let mut notes = Vec::new();
+
+    match routing
+        .open_dht_record(record_key.clone(), Some(owner.clone()))
+        .await
+    {
+        Ok(record) => return Ok((record, notes)),
+        Err(VeilidAPIError::KeyNotFound { .. }) => {
+            notes.push("board is virgin, creating the record".into());
+        }
+        Err(e) => return Err(e.into()),
+    }
+
+    let seeded = routing
+        .create_dht_record(CRYPTO_KIND_VLD0, board_schema(), Some(owner.clone()))
+        .await?;
+    let _ = routing.close_dht_record(seeded.key().clone()).await;
+    notes.push("created and parked the encrypted seed descriptor".into());
+
+    let record = routing.open_dht_record(record_key, Some(owner)).await?;
+    Ok((record, notes))
 }
 
 /// Validates that a derived subkey fits the board schema (guard against drift).

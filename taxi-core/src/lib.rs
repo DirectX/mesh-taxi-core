@@ -26,8 +26,8 @@ pub use bargain::{
     bargain_request, decide_offer,
 };
 pub use board::{
-    BOARD_SCHEMA_O_CNT, board_owner_keypair, board_record_key, board_schema, subkey_for_request,
-    validate_subkey,
+    BOARD_SCHEMA_O_CNT, board_owner_keypair, board_record_key, board_schema,
+    open_or_seed_board_record, subkey_for_request, validate_subkey,
 };
 pub use error::{CoreError, CoreResult};
 pub use geo::{GeoPoint, POSITION_RESOLUTION, SEARCH_RESOLUTION, board_label};
