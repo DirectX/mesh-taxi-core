@@ -79,6 +79,10 @@
 "use strict";
 
 const transcriptEl = document.getElementById("transcript");
+window.onerror = (msg, src, line, col) => {
+  say("JS error: " + msg + " (" + src + ":" + line + ":" + col + ")");
+  return false;
+};
 const ridesEl = document.getElementById("rides");
 const markers = { pickup: null, target: null, driver: null };
 
@@ -127,10 +131,13 @@ function say(line) {
 for (const log of ["[PASS] passenger+driver veilid nodes are attached"]) say(log);
 
 async function post(url, body) {
+  const t0 = Date.now();
+  say(`[SEND] ${url}` + (body && body.request_id ? ` ${body.request_id.slice(0, 8)}` : "") + " ...");
   const response = await fetch(url, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : "{}",
   });
+  say(`[RECV] ${url} HTTP ${response.status} in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) { say("HTTP " + response.status + " " + (data.error || "")); throw new Error(data.error); }
   return data;
