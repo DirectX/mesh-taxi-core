@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use h3o::CellIndex;
 use jni::JNIEnv;
-use jni::objects::{JClass, JDoubleArray, JString};
+use jni::objects::{JClass, JDoubleArray, JObject, JString};
 use jni::sys::{jdouble, jint, jlong, jstring};
 use taxi_core::{
     BargainMessage, BargainStep, GeoPoint, MAX_ZONE, Node, NodeConfig, ObfuscatedRideRequest,
@@ -175,6 +175,7 @@ pub extern "system" fn Java_dev_meshtaxi_android_MeshTaxiCore_startNode(
     _class: JClass,
     role: JString,
     storage_dir: JString,
+    bootstrap: JString,
 ) -> jstring {
     let Ok(role) = env
         .get_string(&role)
@@ -192,6 +193,22 @@ pub extern "system" fn Java_dev_meshtaxi_android_MeshTaxiCore_startNode(
     let mut config = NodeConfig::new(&format!("mesh_taxi_{role}"));
     config.namespace = "android".into();
     config.storage_dir = Some(std::path::PathBuf::from(&storage));
+    if (&bootstrap as &JObject).is_null() {
+        // JVM passed null: keep the default TXT bootstrap.
+    } else {
+        let host = env
+            .get_string(&bootstrap)
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !host.is_empty() {
+            config.bootstrap = Some(
+                host.split(',')
+                    .map(|u| u.trim().to_string())
+                    .filter(|u| !u.is_empty())
+                    .collect(),
+            );
+        }
+    }
 
     // Surface veilid log events through the node update stream on first start.
     let _ = veilid_core::VeilidTracing::try_init([veilid_core::LogOutput::api()
@@ -383,8 +400,19 @@ pub extern "system" fn Java_dev_meshtaxi_android_MeshTaxiCore_publishRide(
     };
 
     let result = core.rt.block_on(async {
+        core.log("pub", "step0: enter");
         let routing = core.api.routing_context()?;
-        let route = core.api.new_private_route().await?;
+        core.log("pub", "step1: routing ctx");
+        let route = core
+            .api
+            .new_custom_private_route(veilid_core::PrivateSpec {
+                hop_count: 1,
+                stability: veilid_core::Stability::LowLatency,
+                sequencing: veilid_core::Sequencing::PreferUnordered,
+                crypto_kinds: vec![veilid_core::CRYPTO_KIND_VLD0],
+            })
+            .await?;
+        core.log("pub", "step2: private route allocated");
 
         let request = ObfuscatedRideRequest {
             request_id: uuid::Uuid::new_v4().to_string(),
@@ -410,7 +438,9 @@ pub extern "system" fn Java_dev_meshtaxi_android_MeshTaxiCore_publishRide(
         }
 
         let board_cell = pickup.search_cell();
+        core.log("pub", "step3: bargain stored");
         let (record, notes) = open_or_seed_board_record(&routing, board_cell).await?;
+        core.log("pub", format!("step4: board record open key={}", record.key()));
 
         let subkey = subkey_for_request(&request.request_id);
         validate_subkey(subkey)?;
@@ -418,9 +448,11 @@ pub extern "system" fn Java_dev_meshtaxi_android_MeshTaxiCore_publishRide(
         routing
             .set_dht_value(record.key(), subkey, bytes, None)
             .await?;
+        core.log("pub", "step5: set value done");
         let flushed = routing
             .flush_dht_record(record.key(), Some(Duration::from_secs(30)))
             .await?;
+        core.log("pub", format!("step6: flush done flushed={}", flushed));
 
         Ok::<_, taxi_core::CoreError>((
             board_label(board_cell),
@@ -544,14 +576,17 @@ pub extern "system" fn Java_dev_meshtaxi_android_MeshTaxiCore_offer(
     };
 
     let steps = core.rt.block_on(async {
+        core.log("offer", format!("jni enter req={request_id}"));
         let request = core.requests.lock().await.get(&request_id).cloned();
         let Some(request) = request else {
+            core.log("offer", "jni: unknown request id");
             return Err(taxi_core::CoreError::Encoding(format!(
                 "unknown request id {request_id}"
             )));
         };
-
+        core.log("offer", "jni: got request, routing context");
         let routing = core.api.routing_context()?;
+        core.log("offer", format!("jni: bargain start blob_len={}", request.route_blob.len()));
         Ok(bargain_request(
             &core.api,
             &routing,

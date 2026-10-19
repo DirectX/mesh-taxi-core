@@ -1,0 +1,10 @@
+[package]
+name = "taxi-bootstrap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap = { workspace = true }
+taxi-core = { workspace = true }
+tokio = { workspace = true }

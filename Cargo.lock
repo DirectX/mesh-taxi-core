@@ -3365,6 +3365,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "taxi-bootstrap"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "taxi-core",
+ "tokio",
+]
+
+[[package]]
 name = "taxi-core"
 version = "0.1.0"
 dependencies = [

@@ -49,6 +49,10 @@ struct Cli {
     /// Data directory for the veilid node (default: temp dir)
     #[arg(long)]
     data_dir: Option<std::path::PathBuf>,
+    /// Bootstrap hosts/URLs (direct udp/tcp/ws URLs), defaults to veilid's
+    /// public bootstrap
+    #[arg(long)]
+    bootstrap: Vec<String>,
 }
 
 #[tokio::main]
@@ -72,6 +76,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting passenger node (veilid)...");
     let mut cfg = NodeConfig::new("mesh_taxi_passenger");
     cfg.storage_dir = cli.data_dir.clone();
+    if !cli.bootstrap.is_empty() {
+        cfg.bootstrap = Some(cli.bootstrap.clone());
+    }
     let mut node = Node::start(cfg).await?;
     node.wait_network_ready(ATTACH_TIMEOUT).await?;
     println!("Node attached to the network.");
@@ -80,7 +87,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Allocate an E2E private route; its publishable blob later imported
     //    by the winning driver. Exact coordinates never reach the DHT.
-    let route = node.api().new_private_route().await?;
+    let route = node
+        .api()
+        .new_custom_private_route(veilid_core::PrivateSpec {
+            hop_count: 1,
+            stability: veilid_core::Stability::LowLatency,
+            sequencing: veilid_core::Sequencing::PreferUnordered,
+            crypto_kinds: vec![veilid_core::CRYPTO_KIND_VLD0],
+        })
+        .await?;
 
     let expires_at = now_secs() + cli.ttl_secs;
 

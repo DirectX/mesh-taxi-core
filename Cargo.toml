@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "taxi-core",
+    "taxi-bootstrap",
     "taxi-passenger",
     "taxi-driver",
     "taxi-web",

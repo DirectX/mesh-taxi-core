@@ -18,6 +18,10 @@ pub struct NodeConfig {
     /// Override for the veilid table/protected store location.
     /// If not set, a per-program folder inside the OS temp dir is used.
     pub storage_dir: Option<PathBuf>,
+    /// Bootstrap server hosts/URLs replacing the default public bootstrap
+    /// (direct `udp://ip:port`, `tcp://ip:port`, `ws://...` URLs or TXT
+    /// hostnames); `None` keeps the veilid default.
+    pub bootstrap: Option<Vec<String>>,
 }
 
 impl NodeConfig {
@@ -26,6 +30,7 @@ impl NodeConfig {
             program_name: program_name.to_string(),
             namespace: String::new(),
             storage_dir: None,
+            bootstrap: None,
         }
     }
 
@@ -65,6 +70,9 @@ impl Node {
             None,
         );
         veilid_config.namespace = config.namespace.clone();
+        if let Some(bootstrap) = &config.bootstrap {
+            veilid_config.network.routing_table.bootstrap = bootstrap.clone();
+        }
 
         let (tx, updates) = mpsc::unbounded_channel::<VeilidUpdate>();
         let update_callback: veilid_core::UpdateCallback = Arc::new(move |update: VeilidUpdate| {
@@ -100,10 +108,16 @@ impl Node {
     /// domain is ready for network operations.
     pub async fn wait_network_ready(&self, timeout: Duration) -> CoreResult<()> {
         let deadline = tokio::time::Instant::now() + timeout;
+        let mut last_state = String::new();
         loop {
             let state = self.api.get_state().await?;
             if state.attachment.public_internet_ready && state.attachment.state.is_attached() {
                 return Ok(());
+            }
+            let s = format!("{:?} pub_ready={}", state.attachment.state, state.attachment.public_internet_ready);
+            if s != last_state {
+                eprintln!("ATT {s}");
+                last_state = s;
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(CoreError::Timeout(timeout));
